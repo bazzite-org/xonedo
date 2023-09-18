@@ -56,11 +56,6 @@ if dkms install -m xone -v "$version" --force; then
     # The blacklist should be placed in /usr/local/lib/modprobe.d for kmod 29+
     install -D -m 644 install/modprobe.conf /etc/modprobe.d/xone-blacklist.conf
 
-    # Avoid conflicts between xpad and xone
-    if lsmod | grep -q '^xpad'; then
-        modprobe -r xpad
-    fi
-
     # Avoid conflicts between mt76x2u and xone
     if lsmod | grep -q '^mt76x2u'; then
         modprobe -r mt76x2u
