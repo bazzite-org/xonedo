@@ -1,0 +1,12 @@
+version: "1"
+rules:
+  - base: master
+    upstream: medusalix:master
+    mergeMethod: merge
+    mergeUnstable: false
+    assignees:
+      - boukehaarsma23
+    reviewers:
+      - boukehaarsma23
+    conflictReviewers:
+      - boukehaarsma23
