@@ -27,7 +27,7 @@
 #define gip_warn(client, ...) dev_warn(&(client)->adapter->dev, __VA_ARGS__)
 #define gip_err(client, ...) dev_err(&(client)->adapter->dev, __VA_ARGS__)
 
-enum gip_command_internal {
+enum gip_command_core {
 	GIP_CMD_ACKNOWLEDGE = 0x01,
 	GIP_CMD_ANNOUNCE = 0x02,
 	GIP_CMD_STATUS = 0x03,
@@ -43,7 +43,7 @@ enum gip_command_internal {
 	GIP_CMD_AUDIO_SAMPLES = 0x60,
 };
 
-enum gip_command_external {
+enum gip_command_client {
 	GIP_CMD_RUMBLE = 0x09,
 	GIP_CMD_INPUT = 0x20,
 };
@@ -65,14 +65,6 @@ enum gip_audio_control {
 enum gip_audio_volume_mute {
 	GIP_AUD_VOLUME_UNMUTED = 0x04,
 	GIP_AUD_VOLUME_MIC_MUTED = 0x05,
-};
-
-struct gip_header {
-	u8 command;
-	u8 options;
-	u8 sequence;
-	u32 packet_length;
-	u32 chunk_offset;
 };
 
 struct gip_pkt_acknowledge {
@@ -104,7 +96,7 @@ struct gip_pkt_status {
 
 struct gip_pkt_identify {
 	u8 unknown[16];
-	__le16 external_commands_offset;
+	__le16 client_commands_offset;
 	__le16 firmware_versions_offset;
 	__le16 audio_formats_offset;
 	__le16 capabilities_out_offset;
@@ -289,6 +281,33 @@ static int gip_decode_header(struct gip_header *hdr, u8 *data, int len)
 	return hdr_len;
 }
 
+static int gip_init_chunk_buffer(struct gip_client *client,
+				 struct gip_header *hdr,
+				 struct gip_chunk_buffer **buf)
+{
+	/* offset is total length of all chunks */
+	if (hdr->chunk_offset > GIP_CHUNK_BUF_MAX_LENGTH)
+		return -EINVAL;
+
+	if (*buf) {
+		gip_err(client, "%s: already initialized\n", __func__);
+		kfree(*buf);
+		*buf = NULL;
+	}
+
+	*buf = kzalloc(sizeof(**buf) + hdr->chunk_offset, GFP_ATOMIC);
+	if (!*buf)
+		return -ENOMEM;
+
+	(*buf)->header = *hdr;
+	(*buf)->header.options &= ~(GIP_OPT_ACKNOWLEDGE | GIP_OPT_CHUNK_START);
+	(*buf)->length = hdr->chunk_offset;
+	gip_dbg(client, "%s: command=0x%02x, length=0x%04x\n", __func__,
+		(*buf)->header.command, (*buf)->length);
+
+	return 0;
+}
+
 static int gip_send_pkt_simple(struct gip_client *client,
 			       struct gip_header *hdr, void *data)
 {
@@ -339,47 +358,36 @@ err_unlock:
 static int gip_send_pkt(struct gip_client *client,
 			struct gip_header *hdr, void *data)
 {
-	u32 len = hdr->packet_length;
-	u32 remaining = len;
 	int err;
 
 	/* packet fits into single buffer */
-	if (len <= GIP_PKT_MAX_LENGTH)
+	if (hdr->packet_length <= GIP_PKT_MAX_LENGTH)
 		return gip_send_pkt_simple(client, hdr, data);
 
+	/* chunk offset of first chunk is total length */
 	hdr->options |= GIP_OPT_ACKNOWLEDGE | GIP_OPT_CHUNK_START |
 			GIP_OPT_CHUNK;
-	hdr->chunk_offset = len;
+	hdr->chunk_offset = hdr->packet_length;
+	hdr->packet_length = GIP_PKT_MAX_LENGTH;
 
-	while (remaining) {
-		/* acknowledge last packet */
-		if (remaining <= GIP_PKT_MAX_LENGTH)
-			hdr->options |= GIP_OPT_ACKNOWLEDGE;
+	err = gip_send_pkt_simple(client, hdr, data);
+	if (err)
+		return err;
 
-		hdr->packet_length = min_t(u32, remaining, GIP_PKT_MAX_LENGTH);
+	/* allocate buffer for all chunks */
+	err = gip_init_chunk_buffer(client, hdr, &client->chunk_buf_in);
+	if (err)
+		return err;
 
-		err = gip_send_pkt_simple(client, hdr, data);
-		if (err)
-			return err;
+	memcpy(client->chunk_buf_in->data, data, hdr->chunk_offset);
 
-		data += hdr->packet_length;
-		remaining -= hdr->packet_length;
-
-		hdr->options &= ~(GIP_OPT_ACKNOWLEDGE | GIP_OPT_CHUNK_START);
-		hdr->chunk_offset = len - remaining;
-	}
-
-	hdr->packet_length = 0;
-	hdr->chunk_offset = len;
-
-	/* send chunk completion */
-	return gip_send_pkt_simple(client, hdr, data);
+	return 0;
 }
 
 static int gip_acknowledge_pkt(struct gip_client *client,
 			       struct gip_header *ack)
 {
-	struct gip_chunk_buffer *chunk_buf = client->chunk_buf;
+	struct gip_chunk_buffer *buf = client->chunk_buf_out;
 	struct gip_header hdr = {};
 	struct gip_pkt_acknowledge pkt = {};
 	u32 len = ack->chunk_offset + ack->packet_length;
@@ -393,8 +401,8 @@ static int gip_acknowledge_pkt(struct gip_client *client,
 	pkt.options = client->id | GIP_OPT_INTERNAL;
 	pkt.length = cpu_to_le16(len);
 
-	if ((ack->options & GIP_OPT_CHUNK) && chunk_buf)
-		pkt.remaining = cpu_to_le16(chunk_buf->length - len);
+	if ((ack->options & GIP_OPT_CHUNK) && buf)
+		pkt.remaining = cpu_to_le16(buf->length - len);
 
 	return gip_send_pkt(client, &hdr, &pkt);
 }
@@ -770,15 +778,15 @@ static struct gip_info_element *gip_parse_info_element(u8 *data, u32 len,
 	return elem;
 }
 
-static int gip_parse_external_commands(struct gip_client *client,
-				       struct gip_pkt_identify *pkt,
-				       u8 *data, u32 len)
+static int gip_parse_client_commands(struct gip_client *client,
+				     struct gip_pkt_identify *pkt,
+				     u8 *data, u32 len)
 {
 	struct gip_info_element *cmds;
 	struct gip_command_descriptor *desc;
 	int i;
 
-	cmds = gip_parse_info_element(data, len, pkt->external_commands_offset,
+	cmds = gip_parse_info_element(data, len, pkt->client_commands_offset,
 				      sizeof(*desc));
 	if (IS_ERR(cmds)) {
 		if (PTR_ERR(cmds) == -ENOTSUPP)
@@ -796,7 +804,7 @@ static int gip_parse_external_commands(struct gip_client *client,
 			__func__, desc->command, desc->length, desc->options);
 	}
 
-	client->external_commands = cmds;
+	client->client_commands = cmds;
 
 	return 0;
 }
@@ -982,6 +990,65 @@ static int gip_parse_hid_descriptor(struct gip_client *client,
 	return 0;
 }
 
+static int gip_send_remaining_chunks(struct gip_client *client)
+{
+	struct gip_chunk_buffer *buf = client->chunk_buf_in;
+	struct gip_header hdr = buf->header;
+	u32 len = buf->length - GIP_PKT_MAX_LENGTH;
+	int err;
+
+	while (len) {
+		/* require acknowledgment for last chunk */
+		if (len <= GIP_PKT_MAX_LENGTH)
+			hdr.options |= GIP_OPT_ACKNOWLEDGE;
+
+		hdr.packet_length = min_t(u32, len, GIP_PKT_MAX_LENGTH);
+		hdr.chunk_offset = buf->length - len;
+
+		err = gip_send_pkt_simple(client, &hdr,
+					  buf->data + hdr.chunk_offset);
+		if (err)
+			return err;
+
+		len -= hdr.packet_length;
+	}
+
+	return 0;
+}
+
+static int gip_handle_pkt_acknowledge(struct gip_client *client,
+				      void *data, u32 len)
+{
+	struct gip_pkt_acknowledge *pkt = data;
+	struct gip_chunk_buffer *buf = client->chunk_buf_in;
+	struct gip_header hdr;
+
+	if (len != sizeof(*pkt))
+		return -EINVAL;
+
+	if (!buf)
+		return 0;
+
+	/* acknowledgment for different command */
+	if (pkt->command != buf->header.command)
+		return 0;
+
+	if (le16_to_cpu(pkt->length) < buf->length)
+		return gip_send_remaining_chunks(client);
+
+	gip_dbg(client, "%s: all chunks sent\n", __func__);
+
+	/* empty chunk signals the completion of the transfer */
+	hdr = buf->header;
+	hdr.packet_length = 0;
+	hdr.chunk_offset = buf->length;
+
+	kfree(buf);
+	client->chunk_buf_in = NULL;
+
+	return gip_send_pkt_simple(client, &hdr, NULL);
+}
+
 static int gip_handle_pkt_announce(struct gip_client *client,
 				   void *data, u32 len)
 {
@@ -1063,7 +1130,7 @@ static int gip_handle_pkt_identify(struct gip_client *client,
 	data += sizeof(pkt->unknown);
 	len -= sizeof(pkt->unknown);
 
-	err = gip_parse_external_commands(client, pkt, data, len);
+	err = gip_parse_client_commands(client, pkt, data, len);
 	if (err)
 		goto err_free_info;
 
@@ -1340,6 +1407,8 @@ static int gip_dispatch_pkt(struct gip_client *client,
 {
 	if (hdr->options & GIP_OPT_INTERNAL) {
 		switch (hdr->command) {
+		case GIP_CMD_ACKNOWLEDGE:
+			return gip_handle_pkt_acknowledge(client, data, len);
 		case GIP_CMD_ANNOUNCE:
 			return gip_handle_pkt_announce(client, data, len);
 		case GIP_CMD_STATUS:
@@ -1369,34 +1438,10 @@ static int gip_dispatch_pkt(struct gip_client *client,
 	return 0;
 }
 
-static int gip_init_chunk_buffer(struct gip_client *client, u32 len)
-{
-	struct gip_chunk_buffer *buf = client->chunk_buf;
-
-	if (len > GIP_CHUNK_BUF_MAX_LENGTH)
-		return -EINVAL;
-
-	if (buf) {
-		gip_err(client, "%s: already initialized\n", __func__);
-		kfree(buf);
-		client->chunk_buf = NULL;
-	}
-
-	buf = kzalloc(sizeof(*buf) + len, GFP_ATOMIC);
-	if (!buf)
-		return -ENOMEM;
-
-	gip_dbg(client, "%s: length=0x%04x\n", __func__, len);
-	buf->length = len;
-	client->chunk_buf = buf;
-
-	return 0;
-}
-
 static int gip_process_pkt_chunked(struct gip_client *client,
 				   struct gip_header *hdr, void *data)
 {
-	struct gip_chunk_buffer *buf = client->chunk_buf;
+	struct gip_chunk_buffer *buf = client->chunk_buf_out;
 	int err;
 
 	gip_dbg(client, "%s: offset=0x%04x, length=0x%04x\n",
@@ -1409,6 +1454,11 @@ static int gip_process_pkt_chunked(struct gip_client *client,
 
 		gip_err(client, "%s: buffer not allocated\n", __func__);
 		return -EPROTO;
+	}
+
+	if (hdr->command != buf->header.command) {
+		gip_err(client, "%s: conflicting packet\n", __func__);
+		return -EALREADY;
 	}
 
 	if (buf->length < hdr->chunk_offset + hdr->packet_length) {
@@ -1425,7 +1475,7 @@ static int gip_process_pkt_chunked(struct gip_client *client,
 	err = gip_dispatch_pkt(client, hdr, buf->data, buf->length);
 
 	kfree(buf);
-	client->chunk_buf = NULL;
+	client->chunk_buf_out = NULL;
 
 	return err;
 }
@@ -1436,8 +1486,8 @@ static int gip_process_pkt(struct gip_client *client,
 	int err;
 
 	if (hdr->options & GIP_OPT_CHUNK_START) {
-		/* offset is total length of all chunks */
-		err = gip_init_chunk_buffer(client, hdr->chunk_offset);
+		err = gip_init_chunk_buffer(client, hdr,
+					    &client->chunk_buf_out);
 		if (err)
 			return err;
 

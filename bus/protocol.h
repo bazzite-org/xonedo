@@ -54,7 +54,16 @@ enum gip_led_mode {
 	GIP_LED_FADE_FAST = 0x09,
 };
 
+struct gip_header {
+	u8 command;
+	u8 options;
+	u8 sequence;
+	u32 packet_length;
+	u32 chunk_offset;
+};
+
 struct gip_chunk_buffer {
+	struct gip_header header;
 	u32 length;
 	u8 data[];
 };

@@ -1,4 +1,12 @@
-# xone [![Release Badge](https://img.shields.io/github/v/release/medusalix/xone?logo=github)](https://github.com/medusalix/xone/releases/latest) [![Discord Badge](https://img.shields.io/discord/733964971842732042?label=discord&logo=discord)](https://discord.gg/FDQxwWk) [![Donate Button](https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif)](https://www.paypal.com/donate?hosted_button_id=BWUECKFDNY446)
+<p align="center">
+    <img src="logo.svg" alt="Logo" width="200">
+</p>
+
+<p align="center">
+    <a href="https://github.com/medusalix/xone/releases/latest"><img src="https://img.shields.io/github/v/release/medusalix/xone?logo=github" alt="Release Badge"></a>
+    <a href="https://discord.gg/FDQxwWk"><img src="https://img.shields.io/discord/733964971842732042?label=discord&logo=discord" alt="Discord Badge"></a>
+    <a href="https://www.paypal.com/donate?hosted_button_id=BWUECKFDNY446"><img src="https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif" alt="Donate Button"></a>
+</p>
 
 `xone` is a Linux kernel driver for Xbox One and Xbox Series X|S accessories. It serves as a modern replacement for `xpad`, aiming to be compatible with Microsoft's *Game Input Protocol* (GIP).
 
@@ -7,6 +15,8 @@
 - [x] Wired devices (via USB)
 - [x] Wireless devices (with Xbox Wireless Dongle)
 - [ ] Bluetooth devices (check out [`xpadneo`](https://github.com/atar-axis/xpadneo))
+
+Installing `xone` will disable the `xpad` kernel driver. If you are still using Xbox or Xbox 360 peripherals, you will have to install [`xpad-noone`](https://github.com/medusalix/xpad-noone) as a replacement for `xpad`.
 
 ## Important notes
 
@@ -28,16 +38,19 @@ Always update your Xbox devices to the latest firmware version!
 - [x] Gamepads
     - [x] Xbox One Controllers
     - [x] Xbox Series X|S Controllers
+    - [x] Xbox Adaptive Controller
     - [x] Third party controllers (PowerA, PDP, etc.)
 - [x] Headsets
     - [x] Xbox One Chat Headset
     - [x] Xbox One Stereo Headset (adapter or jack)
     - [x] Xbox Wireless Headset
     - [x] Third party wireless headsets (SteelSeries, Razer, etc.)
-- [ ] Third party racing wheels (Thrustmaster, Logitech, etc.)
+- [x] Guitars & Drums
+    - [x] Mad Catz Rock Band 4 Wireless Fender Stratocaster
+    - [x] Mad Catz Rock Band 4 Wireless Drum Kit
+    - [x] PDP Rock Band 4 Wireless Fender Jaguar
 - [x] Xbox One Chatpad
-- [x] Xbox Adaptive Controller
-- [x] Mad Catz Rock Band 4 Wireless Stratocaster
+- [ ] Third party racing wheels (Thrustmaster, Logitech, etc.)
 
 ## Releases
 
@@ -50,7 +63,7 @@ Any issues regarding the packaging should be reported to the respective maintain
 
 ### Prerequisites
 
-- Linux (kernel 5.11+ and headers)
+- Linux (kernel 5.13+ and headers)
 - DKMS
 - curl (for firmware download)
 - cabextract (for firmware extraction)
@@ -69,10 +82,10 @@ git clone https://github.com/medusalix/xone
 
 ```
 cd xone
-sudo ./install.sh --release
+sudo ./install.sh
 ```
 
-**NOTE:** Please omit the `--release` flag when asked for your debug logs.
+**NOTE:** You can use the `--release` flag to disable debug logging.
 
 4. Download the firmware for the wireless dongle:
 
@@ -105,6 +118,12 @@ The guide button LED can be controlled via `sysfs`:
 ```
 echo 2 | sudo tee /sys/class/leds/gip*/mode
 echo 5 | sudo tee /sys/class/leds/gip*/brightness
+```
+
+Changing the LED in the above way is temporary, it will only last until the device disconnects. To apply these settings automatically when a device connects, you can create a new `udev` rule in `/etc/udev/rules.d/50-xone.rules` with the following content:
+
+```
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="gip*", ATTR{mode}="2", ATTR{brightness}="5"
 ```
 
 Replace the wildcard (`gip*`) if you want to control the LED of a specific device.

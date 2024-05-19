@@ -380,11 +380,13 @@ static int gip_auth_handle_pkt_certificate(struct gip_auth *auth,
 	if (len > GIP_AUTH_CERTIFICATE_MAX_LEN)
 		return -EINVAL;
 
-	/* poor way of extracting a pubkey from an X.509 certificate */
-	/* the certificates issued by Microsoft do not comply with RFC 5280 */
-	/* they have an empty subject and no subjectAltName */
-	/* this is explicitly forbidden by section 4.2.1.6 of the RFC */
-	/* the kernel's ASN.1 parser will fail when using x509_cert_parse */
+	/*
+	 * Poor way of extracting a pubkey from an X.509 certificate.
+	 * The certificates issued by Microsoft do not comply with RFC 5280.
+	 * They have an empty subject and no subjectAltName.
+	 * This is explicitly forbidden by section 4.2.1.6 of the RFC.
+	 * The kernel's ASN.1 parser will fail when using x509_cert_parse.
+	 */
 	for (i = 0; i + sizeof(asn1_seq) <= len; i++) {
 		if (memcmp(data + i, asn1_seq, sizeof(asn1_seq)))
 			continue;
@@ -484,17 +486,24 @@ static void gip_auth_exchange_rsa(struct work_struct *work)
 			__func__, err);
 }
 
+int gip_auth_send_complete(struct gip_client *client)
+{
+	struct gip_auth_header_control hdr = {};
+
+	hdr.context = GIP_AUTH_CTX_CONTROL;
+	hdr.control = GIP_AUTH_CTRL_COMPLETE;
+
+	return gip_send_authenticate(client, &hdr, sizeof(hdr), false);
+}
+EXPORT_SYMBOL_GPL(gip_auth_send_complete);
+
 static void gip_auth_complete_handshake(struct work_struct *work)
 {
 	struct gip_auth *auth = container_of(work, typeof(*auth),
 					     work_complete);
-	struct gip_auth_header_control hdr = {};
 	u8 random[GIP_AUTH_RANDOM_LEN * 2];
 	u8 key[GIP_AUTH_SESSION_KEY_LEN];
 	int err;
-
-	hdr.context = GIP_AUTH_CTX_CONTROL;
-	hdr.control = GIP_AUTH_CTRL_COMPLETE;
 
 	memcpy(random, auth->random_host, sizeof(auth->random_host));
 	memcpy(random + sizeof(auth->random_host), auth->random_client,
@@ -515,9 +524,9 @@ static void gip_auth_complete_handshake(struct work_struct *work)
 	dev_dbg(&auth->client->dev, "%s: key=%*phD\n", __func__,
 		(int)sizeof(key), key);
 
-	err = gip_send_authenticate(auth->client, &hdr, sizeof(hdr), false);
+	err = gip_auth_send_complete(auth->client);
 	if (err) {
-		dev_err(&auth->client->dev, "%s: send pkt failed: %d\n",
+		dev_err(&auth->client->dev, "%s: send complete failed: %d\n",
 			__func__, err);
 		return;
 	}

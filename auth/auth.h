@@ -44,5 +44,6 @@ struct gip_auth {
 	u8 master_secret[GIP_AUTH_SECRET_LEN];
 };
 
+int gip_auth_send_complete(struct gip_client *client);
 int gip_auth_process_pkt(struct gip_auth *auth, void *data, u32 len);
 int gip_auth_start_handshake(struct gip_auth *auth, struct gip_client *client);
