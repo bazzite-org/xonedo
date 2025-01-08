@@ -1,0 +1,12 @@
+version: "1"
+rules:
+  - base: master
+    upstream: dlundqvist
+    mergeMethod: rebase
+    mergeUnstable: false
+    assignees:
+      - KyleGospo
+    reviewers:
+      - KyleGospo
+    conflictReviewers:
+      - KyleGospo
