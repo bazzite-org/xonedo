@@ -92,7 +92,7 @@ sudo ./install.sh
 4. Download the firmware for the wireless dongle:
 
 ```
-sudo xone-get-firmware.sh
+sudo install/firmware.sh
 ```
 
 **NOTE:** The `--skip-disclaimer` flag might be useful for scripting purposes.

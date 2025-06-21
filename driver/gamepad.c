@@ -99,7 +99,14 @@ struct gip_gamepad {
 
 static void gip_gamepad_send_rumble(struct timer_list *timer)
 {
-	struct gip_gamepad_rumble *rumble = from_timer(rumble, timer, timer);
+	// from_timer() has been renamed to timer_container_of() in linux 6.16
+	struct gip_gamepad_rumble *rumble =
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
+		timer_container_of(rumble, timer, timer);
+#else
+		from_timer(rumble, timer, timer);
+#endif
+
 	struct gip_gamepad *gamepad = container_of(rumble, typeof(*gamepad),
 						   rumble);
 	unsigned long flags;
